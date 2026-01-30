@@ -1,10 +1,21 @@
+# Python
 __pycache__/
 *.pyc
-.env
-.venv/
-.vscode/
-.idea/
+*.pyo
+*.pyd
+*.egg-info/
 dist/
 build/
-*.egg-info/
+
+# Virtual env
+.venv/
+
+# Pytest
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# Outputs
 out/

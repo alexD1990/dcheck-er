@@ -1,18 +1,13 @@
 from __future__ import annotations
 
 import time
-from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from dcheck_enterprise_runner.io import ensure_dir, write_json
 from dcheck_enterprise_runner.serializer import report_to_dict
-from dcheck_enterprise_runner.spec import EnterpriseSpec, load_spec
-
-# External dependency: DCheck core
-from dcheck import check as core_check  # or: from dcheck.api import check
-
+from dcheck_enterprise_runner.spec import load_spec, EnterpriseSpec
 
 _SCHEMA = "dcheck-enterprise-runner/v1"
 
@@ -25,10 +20,23 @@ def _should_fail(status_counts: dict[str, int], fail_on: list[str]) -> bool:
     return any(status_counts.get(s, 0) > 0 for s in fail_on)
 
 
-def run_from_yaml(spec_path: str | Path) -> int:
-    spec: EnterpriseSpec = load_spec(spec_path)
+def run_from_yaml(spec_path: str | Path, check_fn=None) -> int:
+    """
+    Baseline enterprise runner v1.
 
+    Contract:
+    - Reads YAML spec
+    - Executes DCheck core check(...) sequentially
+    - Forces render=False
+    - Writes <output_dir>/run.json
+    - Returns exit code 0 or 1
+    """
+    if check_fn is None:
+        from dcheck import check as check_fn  
+
+    spec: EnterpriseSpec = load_spec(spec_path)
     out_dir = ensure_dir(spec.run.output_dir)
+
     started = _utc_now()
 
     checks_out: list[dict[str, Any]] = []
@@ -36,28 +44,28 @@ def run_from_yaml(spec_path: str | Path) -> int:
 
     for idx, job in enumerate(spec.checks, start=1):
         t0 = time.time()
-        exception_str = None
-        report_dict = None
-        failed = False
+        exception_str: str | None = None
+        report_dict: dict[str, Any] | None = None
 
-        # LOCK render=False (contract)
         try:
-            report = core_check(
+            report = check_fn(
                 source=job.source,
                 table_name=job.table_name,
-                render=False,
+                render=False,          # LOCKED
                 cache=job.cache,
                 modules=job.modules,
                 config=job.config,
             )
             report_dict = report_to_dict(report)
-            failed = _should_fail(report_dict["summary"]["status_counts"], spec.run.fail_on)
+            failed = _should_fail(
+                report_dict["summary"]["status_counts"],
+                spec.run.fail_on,
+            )
         except Exception as e:
-            exception_str = f"{type(e).__name__}: {e}"
             failed = True
+            exception_str = f"{type(e).__name__}: {e}"
 
         duration_ms = int((time.time() - t0) * 1000)
-
         if failed:
             failed_total += 1
 
@@ -67,7 +75,7 @@ def run_from_yaml(spec_path: str | Path) -> int:
                 "input": {
                     "source": job.source,
                     "table_name": job.table_name,
-                    "render": False,            # explicit in output for transparency
+                    "render": False,
                     "cache": job.cache,
                     "modules": job.modules,
                     "config": job.config,
@@ -103,5 +111,4 @@ def run_from_yaml(spec_path: str | Path) -> int:
     }
 
     write_json(Path(out_dir) / "run.json", payload)
-
     return 1 if failed_total > 0 else 0
